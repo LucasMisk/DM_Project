@@ -5,8 +5,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from collections import defaultdict
 from nltk.tokenize import word_tokenize
-from nltk import FreqDist
+from nltk import FreqDist, pos_tag
 import pickle
+
 
 # Tokenizer and padding functions
 class CustomTokenizer:
@@ -26,7 +27,9 @@ class CustomTokenizer:
         self.vocab_size = len(self.word_index) + 1
 
     def texts_to_sequences(self, texts):
-        return [[self.word_index[word] for word in word_tokenize(text.lower()) if word in self.word_index] for text in texts]
+        return [[self.word_index[word] for word in word_tokenize(text.lower()) if word in self.word_index] for text in
+                texts]
+
 
 def pad_sequences(sequences, maxlen, padding='pre'):
     padded_sequences = np.zeros((len(sequences), maxlen), dtype=np.int32)
@@ -36,6 +39,7 @@ def pad_sequences(sequences, maxlen, padding='pre'):
         elif padding == 'post':
             padded_sequences[i, :len(seq)] = np.array(seq)[:maxlen]
     return padded_sequences
+
 
 # Define the model
 class LyricsModel(nn.Module):
@@ -52,12 +56,13 @@ class LyricsModel(nn.Module):
         x = self.fc(x)
         return x
 
-# Generating lyrics with temperature control
+
+# Generating lyrics with temperature control and POS tagging
 def generate_lyrics(seed_text, next_words, model, max_sequence_len, tokenizer, temperature=1.0):
     model.eval()
     for _ in range(next_words):
         token_list = tokenizer.texts_to_sequences([seed_text])[0]
-        token_list = pad_sequences([token_list], maxlen=max_sequence_len-1, padding='pre')
+        token_list = pad_sequences([token_list], maxlen=max_sequence_len - 1, padding='pre')
         token_list = torch.tensor(token_list).long().to(device)
         with torch.no_grad():
             predicted = model(token_list)
@@ -65,8 +70,46 @@ def generate_lyrics(seed_text, next_words, model, max_sequence_len, tokenizer, t
             probabilities = torch.nn.functional.softmax(predicted, dim=-1)
             predicted_index = torch.multinomial(probabilities, 1).item()
         output_word = tokenizer.index_word.get(predicted_index, "")
-        seed_text += " " + output_word
+        if output_word:
+            seed_text += " " + output_word
+            seed_text = adjust_for_pos(seed_text)
     return seed_text
+
+
+def adjust_for_pos(seed_text):
+    words = word_tokenize(seed_text)
+    pos_tags = pos_tag(words)
+
+    adjusted_words = []
+    i = 0
+    while i < len(pos_tags):
+        word, tag = pos_tags[i]
+        if tag == 'IN':  # Preposition
+            adjusted_words.append(word)
+            if i + 1 < len(pos_tags):
+                next_word, next_tag = pos_tags[i + 1]
+                if next_tag not in ('NN', 'NNS', 'NNP', 'NNPS'):  # Not a noun
+                    next_word = find_next_noun(i + 1, pos_tags)  # Find next noun
+                    if next_word:
+                        adjusted_words.append(next_word)
+                        i += 1  # Skip the replaced word
+                else:
+                    adjusted_words.append(next_word)
+                    i += 1
+        else:
+            adjusted_words.append(word)
+        i += 1
+
+    return " ".join(adjusted_words)
+
+
+def find_next_noun(start_index, pos_tags):
+    for i in range(start_index, len(pos_tags)):
+        word, tag = pos_tags[i]
+        if tag in ('NN', 'NNS', 'NNP', 'NNPS'):
+            return word
+    return None
+
 
 # Loading the best model and tokenizer
 best_model_path = 'best_lyrics_model.pth'
@@ -87,6 +130,6 @@ best_model.load_state_dict(torch.load(best_model_path))
 best_model.eval()
 
 # Generate lyrics using the best model
-seed_text = "Tyr <genre> Metal"
+seed_text = "Metallica"
 generated_lyrics = generate_lyrics(seed_text, 100, best_model, max_sequence_len, tokenizer, temperature=0.8)
 print(generated_lyrics)
